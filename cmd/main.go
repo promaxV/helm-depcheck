@@ -158,12 +158,14 @@ func outputText(result *types.CheckResult) error {
 	fmt.Print("========================\n\n")
 
 	// Print matched namespaces
-	if len(result.MatchedNamespaces) > 0 {
-		fmt.Printf("Matched Namespaces (%d): %s\n",
-			len(result.MatchedNamespaces),
-			strings.Join(result.MatchedNamespaces, ", "))
-	} else {
-		fmt.Println("No namespaces matched the pattern")
+	if config.Verbose {
+		if len(result.MatchedNamespaces) > 0 {
+			fmt.Printf("Matched Namespaces (%d): %s\n",
+				len(result.MatchedNamespaces),
+				strings.Join(result.MatchedNamespaces, ", "))
+		} else {
+			fmt.Println("No namespaces matched the pattern")
+		}
 	}
 
 	if result.Summary.Total == 0 {
@@ -201,7 +203,8 @@ func outputText(result *types.CheckResult) error {
 			if config.Verbose || dep.Status != types.StatusSatisfied {
 				if len(dep.FoundReleases) > 0 {
 					for _, release := range dep.FoundReleases {
-						fmt.Printf("    Found: %s/%s (version: %s)\n",
+						fmt.Println()
+						fmt.Printf("    Found: %s/%s (version: %s)",
 							release.Namespace, release.Name, release.Chart.Version)
 					}
 				}
@@ -211,6 +214,7 @@ func outputText(result *types.CheckResult) error {
 			}
 			fmt.Println()
 		}
+		fmt.Println()
 	}
 
 	// Print errors
@@ -219,8 +223,8 @@ func outputText(result *types.CheckResult) error {
 		fmt.Println("-------")
 		for _, err := range result.Errors {
 			fmt.Println(err.Error())
-			fmt.Println()
 		}
+		fmt.Println()
 	}
 
 	// Print final status
@@ -229,6 +233,7 @@ func outputText(result *types.CheckResult) error {
 	} else {
 		fmt.Println("✗ Dependency check failed!")
 	}
+	fmt.Println()
 
 	return nil
 }
