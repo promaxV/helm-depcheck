@@ -155,7 +155,7 @@ func outputYAML(result *types.CheckResult) error {
 func outputText(result *types.CheckResult) error {
 	// Print summary
 	fmt.Println("Dependency Check Results")
-	fmt.Println("========================\n")
+	fmt.Print("========================\n\n")
 
 	// Print matched namespaces
 	if len(result.MatchedNamespaces) > 0 {
