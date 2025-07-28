@@ -26,50 +26,42 @@ func NewChecker(helmClient *helm.Client, parser *parser.Parser) *Checker {
 	}
 }
 
-// Check performs the main dependency check operation
+// Check performs the main dependency check operation for multiple charts
 func (c *Checker) Check(config types.Config) (*types.CheckResult, error) {
 	result := &types.CheckResult{
 		Success:           true,
-		Dependencies:      []types.DependencyResult{},
+		ChartResults:      []types.ChartCheckResult{},
+		TotalSummary:      types.ResultSummary{},
 		Errors:            []types.ValidationError{},
-		Summary:           types.ResultSummary{},
 		MatchedNamespaces: []string{},
 	}
 
-	// Validate chart path
-	if err := c.parser.ValidateChartPath(config.ChartPath); err != nil {
+	// Find all chart paths
+	chartPaths, err := c.parser.FindCharts(config.ChartPaths)
+	if err != nil {
 		result.Success = false
 		result.Errors = append(result.Errors, types.NewValidationError(
 			types.ErrorTypeInvalidDependencyFile,
 			"",
-			err.Error(),
-			types.ErrorDetails{File: config.ChartPath},
+			fmt.Sprintf("failed to find charts: %v", err),
+			types.ErrorDetails{},
 		))
 		return result, nil
 	}
 
-	// Parse dependencies
-	deps, err := c.parser.ParseDependencies(config.ChartPath)
-	if err != nil {
+	if len(chartPaths) == 0 {
 		result.Success = false
-		if validationErr, ok := err.(types.ValidationError); ok {
-			result.Errors = append(result.Errors, validationErr)
-		} else {
-			result.Errors = append(result.Errors, types.NewValidationError(
-				types.ErrorTypeInvalidDependencyFile,
-				"",
-				err.Error(),
-				types.ErrorDetails{},
-			))
-		}
+		result.Errors = append(result.Errors, types.NewValidationError(
+			types.ErrorTypeInvalidDependencyFile,
+			"",
+			"no valid chart directories found",
+			types.ErrorDetails{},
+		))
 		return result, nil
 	}
 
-	// Use provided namespace pattern or empty string for default behavior
-	namespacePattern := config.NamespacePattern
-
-	// Get matched namespaces for reporting
-	matchedNamespaces, err := c.getMatchedNamespaces(namespacePattern)
+	// Get matched namespaces for reporting (only once)
+	matchedNamespaces, err := c.getMatchedNamespaces(config.NamespacePattern)
 	if err != nil {
 		result.Success = false
 		result.Errors = append(result.Errors, types.NewValidationError(
@@ -82,9 +74,87 @@ func (c *Checker) Check(config types.Config) (*types.CheckResult, error) {
 	}
 	result.MatchedNamespaces = matchedNamespaces
 
+	// Check each chart
+	for _, chartPath := range chartPaths {
+		chartResult := c.checkSingleChart(chartPath, config.NamespacePattern)
+		result.ChartResults = append(result.ChartResults, chartResult)
+
+		// Update overall success status
+		if !chartResult.Success {
+			result.Success = false
+		}
+
+		// Aggregate summary
+		result.TotalSummary.Total += chartResult.Summary.Total
+		result.TotalSummary.Satisfied += chartResult.Summary.Satisfied
+		result.TotalSummary.NotFound += chartResult.Summary.NotFound
+		result.TotalSummary.Mismatched += chartResult.Summary.Mismatched
+		result.TotalSummary.Multiple += chartResult.Summary.Multiple
+		result.TotalSummary.Errors += chartResult.Summary.Errors
+
+		// Aggregate errors
+		result.Errors = append(result.Errors, chartResult.Errors...)
+	}
+
+	return result, nil
+}
+
+// checkSingleChart checks dependencies for a single chart
+func (c *Checker) checkSingleChart(chartPath, namespacePattern string) types.ChartCheckResult {
+	result := types.ChartCheckResult{
+		ChartPath:    chartPath,
+		Success:      true,
+		Dependencies: []types.DependencyResult{},
+		Errors:       []types.ValidationError{},
+		Summary:      types.ResultSummary{},
+	}
+
+	// Get chart info
+	chartInfo, err := c.parser.GetChartInfo(chartPath)
+	if err != nil {
+		result.Success = false
+		result.Errors = append(result.Errors, types.NewValidationError(
+			types.ErrorTypeInvalidDependencyFile,
+			"",
+			fmt.Sprintf("failed to read chart info: %v", err),
+			types.ErrorDetails{File: chartPath},
+		))
+		return result
+	}
+	result.ChartName = chartInfo.Name
+
+	// Validate chart path
+	if err := c.parser.ValidateChartPath(chartPath); err != nil {
+		result.Success = false
+		result.Errors = append(result.Errors, types.NewValidationError(
+			types.ErrorTypeInvalidDependencyFile,
+			"",
+			err.Error(),
+			types.ErrorDetails{File: chartPath},
+		))
+		return result
+	}
+
+	// Parse dependencies
+	deps, err := c.parser.ParseDependencies(chartPath)
+	if err != nil {
+		result.Success = false
+		if validationErr, ok := err.(types.ValidationError); ok {
+			result.Errors = append(result.Errors, validationErr)
+		} else {
+			result.Errors = append(result.Errors, types.NewValidationError(
+				types.ErrorTypeInvalidDependencyFile,
+				"",
+				err.Error(),
+				types.ErrorDetails{},
+			))
+		}
+		return result
+	}
+
 	// If no dependencies, return success
 	if len(deps.Dependencies) == 0 {
-		return result, nil
+		return result
 	}
 
 	// Check each dependency
@@ -118,8 +188,103 @@ func (c *Checker) Check(config types.Config) (*types.CheckResult, error) {
 		}
 	}
 
-	return result, nil
+	return result
 }
+
+// Check performs the main dependency check operation
+// func (c *Checker) Check(config types.Config) (*types.CheckResult, error) {
+// 	result := &types.CheckResult{
+// 		Success:           true,
+// 		Dependencies:      []types.DependencyResult{},
+// 		Errors:            []types.ValidationError{},
+// 		Summary:           types.ResultSummary{},
+// 		MatchedNamespaces: []string{},
+// 	}
+
+// 	// Validate chart path
+// 	if err := c.parser.ValidateChartPath(config.ChartPath); err != nil {
+// 		result.Success = false
+// 		result.Errors = append(result.Errors, types.NewValidationError(
+// 			types.ErrorTypeInvalidDependencyFile,
+// 			"",
+// 			err.Error(),
+// 			types.ErrorDetails{File: config.ChartPath},
+// 		))
+// 		return result, nil
+// 	}
+
+// 	// Parse dependencies
+// 	deps, err := c.parser.ParseDependencies(config.ChartPath)
+// 	if err != nil {
+// 		result.Success = false
+// 		if validationErr, ok := err.(types.ValidationError); ok {
+// 			result.Errors = append(result.Errors, validationErr)
+// 		} else {
+// 			result.Errors = append(result.Errors, types.NewValidationError(
+// 				types.ErrorTypeInvalidDependencyFile,
+// 				"",
+// 				err.Error(),
+// 				types.ErrorDetails{},
+// 			))
+// 		}
+// 		return result, nil
+// 	}
+
+// 	// Use provided namespace pattern or empty string for default behavior
+// 	namespacePattern := config.NamespacePattern
+
+// 	// Get matched namespaces for reporting
+// 	matchedNamespaces, err := c.getMatchedNamespaces(namespacePattern)
+// 	if err != nil {
+// 		result.Success = false
+// 		result.Errors = append(result.Errors, types.NewValidationError(
+// 			types.ErrorTypeHelmClientError,
+// 			"",
+// 			fmt.Sprintf("failed to get matching namespaces: %v", err),
+// 			types.ErrorDetails{},
+// 		))
+// 		return result, nil
+// 	}
+// 	result.MatchedNamespaces = matchedNamespaces
+
+// 	// If no dependencies, return success
+// 	if len(deps.Dependencies) == 0 {
+// 		return result, nil
+// 	}
+
+// 	// Check each dependency
+// 	for _, dep := range deps.Dependencies {
+// 		depResult := c.checkSingleDependency(dep, namespacePattern)
+// 		result.Dependencies = append(result.Dependencies, depResult)
+
+// 		// Update summary
+// 		result.Summary.Total++
+// 		switch depResult.Status {
+// 		case types.StatusSatisfied:
+// 			result.Summary.Satisfied++
+// 		case types.StatusNotFound:
+// 			result.Summary.NotFound++
+// 			result.Success = false
+// 		case types.StatusVersionMismatch:
+// 			result.Summary.Mismatched++
+// 			result.Success = false
+// 		case types.StatusMultipleFound:
+// 			result.Summary.Multiple++
+// 			result.Success = false
+// 		case types.StatusError:
+// 			result.Summary.Errors++
+// 			result.Success = false
+// 		}
+
+// 		// Add validation errors for failed checks
+// 		if depResult.Status != types.StatusSatisfied {
+// 			validationError := c.createValidationError(depResult, namespacePattern)
+// 			result.Errors = append(result.Errors, validationError)
+// 		}
+// 	}
+
+// 	return result, nil
+// }
 
 // checkSingleDependency checks a single dependency against deployed releases
 func (c *Checker) checkSingleDependency(dep types.Dependency, namespacePattern string) types.DependencyResult {
@@ -283,8 +448,8 @@ func (c *Checker) createValidationError(depResult types.DependencyResult, namesp
 
 // ValidateConfig validates the checker configuration
 func (c *Checker) ValidateConfig(config types.Config) error {
-	if config.ChartPath == "" {
-		return fmt.Errorf("chart path is required")
+	if len(config.ChartPaths) == 0 {
+		return fmt.Errorf("at least one chart path is required")
 	}
 
 	// Validate namespace pattern if provided

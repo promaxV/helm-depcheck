@@ -35,10 +35,20 @@ type ChartInfo struct {
 // CheckResult represents the result of dependency checking
 type CheckResult struct {
 	Success           bool               `json:"success"`
+	ChartResults      []ChartCheckResult `json:"chart_results"`
+	TotalSummary      ResultSummary      `json:"total_summary"`
+	Errors            []ValidationError  `json:"errors,omitempty"`
+	MatchedNamespaces []string           `json:"matched_namespaces,omitempty"`
+}
+
+// ChartCheckResult represents the check result for a single chart
+type ChartCheckResult struct {
+	ChartPath         string             `json:"chart_path"`
+	ChartName         string             `json:"chart_name"`
+	Success           bool               `json:"success"`
 	Dependencies      []DependencyResult `json:"dependencies"`
 	Errors            []ValidationError  `json:"errors,omitempty"`
 	Summary           ResultSummary      `json:"summary"`
-	MatchedNamespaces []string           `json:"matched_namespaces,omitempty"`
 }
 
 // DependencyResult represents the check result for a single dependency
@@ -96,7 +106,7 @@ type ErrorDetails struct {
 
 // Config holds configuration for the dependency checker
 type Config struct {
-	ChartPath        string
+	ChartPaths       []string // Changed from ChartPath to ChartPaths
 	NamespacePattern string
 	Verbose          bool
 	OutputFormat     string

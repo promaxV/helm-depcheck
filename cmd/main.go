@@ -27,15 +27,19 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "helm-depcheck CHART_PATH",
+		Use:   "helm-depcheck CHART_PATH [CHART_PATH...]",
 		Short: "Check Helm chart dependencies compatibility",
 		Long: `A Helm plugin that validates chart dependencies by checking
 deployed releases compatibility with semver constraints.
 
-This tool reads dependencies.yaml from your chart and validates that
-deployed releases meet the specified version constraints.`,
+This tool reads dependencies.yaml from your charts and validates that
+deployed releases meet the specified version constraints.
+
+Supports wildcards for finding multiple charts:
+  helm-depcheck ./charts/*
+  helm-depcheck ./microservices/*/charts ./system-charts/*`,
 		Version: version,
-		Args:    cobra.ExactArgs(1),
+		Args:    cobra.MinimumNArgs(1),
 		RunE:    runCheck,
 	}
 
@@ -53,17 +57,20 @@ deployed releases meet the specified version constraints.`,
 	rootCmd.Example = `  # Check dependencies for chart in current directory
   helm dependency-check ./my-chart
 
+  # Check multiple charts with wildcards
+  helm dependency-check ./charts/*
+
+  # Check multiple specific charts
+  helm dependency-check ./frontend ./backend ./database
+
   # Check with specific namespace pattern
-  helm dependency-check --namespace-pattern "develop.*" ./charts/api
+  helm dependency-check --namespace-pattern "develop.*" ./charts/*
 
   # Output in JSON format
-  helm dependency-check --output json ./frontend
+  helm dependency-check --output json ./charts/*
 
-  # Include system namespaces in search
-  helm dependency-check --namespace-pattern ".*" ./system-chart
-
-  # Use specific kubeconfig
-  helm dependency-check --kubeconfig /path/to/config ./my-chart`
+  # Mix of patterns and specific paths
+  helm dependency-check ./system-charts/* ./microservices/api ./microservices/web`
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -72,7 +79,7 @@ deployed releases meet the specified version constraints.`,
 }
 
 func runCheck(cmd *cobra.Command, args []string) error {
-	config.ChartPath = args[0]
+	config.ChartPaths = args
 
 	// Validate configuration
 	if err := validateConfig(); err != nil {
@@ -121,9 +128,9 @@ func runCheck(cmd *cobra.Command, args []string) error {
 }
 
 func validateConfig() error {
-	// Check if chart path exists
-	if _, err := os.Stat(config.ChartPath); os.IsNotExist(err) {
-		return fmt.Errorf("chart path does not exist: %s", config.ChartPath)
+	// Validate that we have at least one chart path
+	if len(config.ChartPaths) == 0 {
+		return fmt.Errorf("at least one chart path is required")
 	}
 
 	return nil
@@ -157,6 +164,8 @@ func outputText(result *types.CheckResult) error {
 	fmt.Println("Dependency Check Results")
 	fmt.Print("========================\n\n")
 
+	fmt.Printf("Charts Checked: %d\n", len(result.ChartResults))
+
 	// Print matched namespaces
 	if config.Verbose {
 		if len(result.MatchedNamespaces) > 0 {
@@ -168,51 +177,70 @@ func outputText(result *types.CheckResult) error {
 		}
 	}
 
-	if result.Summary.Total == 0 {
-		fmt.Println("No dependencies found in dependencies.yaml")
+	if result.TotalSummary.Total == 0 {
+		fmt.Println("No dependencies found in any charts")
 		return nil
 	}
 
-	fmt.Printf("Total Dependencies: %d\n", result.Summary.Total)
-	fmt.Printf("✓ Satisfied: %d\n", result.Summary.Satisfied)
+	fmt.Printf("Total Dependencies: %d\n", result.TotalSummary.Total)
+	fmt.Printf("✓ Satisfied: %d\n", result.TotalSummary.Satisfied)
 
-	if result.Summary.NotFound > 0 {
-		fmt.Printf("✗ Not Found: %d\n", result.Summary.NotFound)
+	if result.TotalSummary.NotFound > 0 {
+		fmt.Printf("✗ Not Found: %d\n", result.TotalSummary.NotFound)
 	}
-	if result.Summary.Mismatched > 0 {
-		fmt.Printf("✗ Version Mismatch: %d\n", result.Summary.Mismatched)
+	if result.TotalSummary.Mismatched > 0 {
+		fmt.Printf("✗ Version Mismatch: %d\n", result.TotalSummary.Mismatched)
 	}
-	if result.Summary.Multiple > 0 {
-		fmt.Printf("✗ Multiple Found: %d\n", result.Summary.Multiple)
+	if result.TotalSummary.Multiple > 0 {
+		fmt.Printf("✗ Multiple Found: %d\n", result.TotalSummary.Multiple)
 	}
-	if result.Summary.Errors > 0 {
-		fmt.Printf("✗ Errors: %d\n", result.Summary.Errors)
+	if result.TotalSummary.Errors > 0 {
+		fmt.Printf("✗ Errors: %d\n", result.TotalSummary.Errors)
 	}
 
 	fmt.Println()
 
-	// Print detailed results
-	if config.Verbose || !result.Success {
-		fmt.Println("Detailed Results:")
-		fmt.Println("-----------------")
+	// Print results for each chart
+	for _, chartResult := range result.ChartResults {
+		fmt.Printf("Chart: %s (%s)\n", chartResult.ChartName, chartResult.ChartPath)
+		fmt.Println(strings.Repeat("-", len(chartResult.ChartName)+len(chartResult.ChartPath)+10))
 
-		for _, dep := range result.Dependencies {
-			status := getStatusSymbol(dep.Status)
-			fmt.Printf("%s %s (required: %s)", status, dep.Name, dep.RequiredVersion)
+		if chartResult.Summary.Total == 0 {
+			fmt.Println("  No dependencies found")
+			fmt.Println()
+			continue
+		}
 
-			if config.Verbose || dep.Status != types.StatusSatisfied {
-				if len(dep.FoundReleases) > 0 {
-					for _, release := range dep.FoundReleases {
-						fmt.Println()
-						fmt.Printf("    Found: %s/%s (version: %s)",
-							release.Namespace, release.Name, release.Chart.Version)
+		fmt.Printf("  Dependencies: %d", chartResult.Summary.Total)
+		if chartResult.Success {
+			fmt.Printf(" (✓ All satisfied)")
+		} else {
+			fmt.Printf(" (✗ %d issues)", 
+				chartResult.Summary.NotFound+chartResult.Summary.Mismatched+
+				chartResult.Summary.Multiple+chartResult.Summary.Errors)
+		}
+		fmt.Println()
+
+		// Print detailed results if verbose or has issues
+		if config.Verbose || !chartResult.Success {
+			for _, dep := range chartResult.Dependencies {
+				status := getStatusSymbol(dep.Status)
+				fmt.Printf("    %s %s (required: %s)", status, dep.Name, dep.RequiredVersion)
+
+				if config.Verbose || dep.Status != types.StatusSatisfied {
+					if len(dep.FoundReleases) > 0 {
+						for _, release := range dep.FoundReleases {
+							fmt.Println()
+							fmt.Printf("        Found: %s/%s (version: %s)",
+								release.Namespace, release.Name, release.Chart.Version)
+						}
+					}
+					if dep.Error != "" {
+						fmt.Printf("\n        Error: %s", dep.Error)
 					}
 				}
-				if dep.Error != "" {
-					fmt.Printf("    Error: %s\n", dep.Error)
-				}
+				fmt.Println()
 			}
-			fmt.Println()
 		}
 		fmt.Println()
 	}
@@ -229,7 +257,7 @@ func outputText(result *types.CheckResult) error {
 
 	// Print final status
 	if result.Success {
-		fmt.Println("✓ All dependencies satisfied!")
+		fmt.Println("✓ All chart dependencies satisfied!")
 	} else {
 		fmt.Println("✗ Dependency check failed!")
 	}

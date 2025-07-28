@@ -197,3 +197,63 @@ func (p *Parser) GetChartInfo(chartPath string) (*types.ChartInfo, error) {
 		Version: chart.Version,
 	}, nil
 }
+
+// FindCharts finds all chart directories matching the given patterns
+func (p *Parser) FindCharts(patterns []string) ([]string, error) {
+	var chartPaths []string
+	seenPaths := make(map[string]bool)
+
+	for _, pattern := range patterns {
+		paths, err := p.findChartsForPattern(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process pattern '%s': %v", pattern, err)
+		}
+
+		// Add unique paths
+		for _, path := range paths {
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				continue
+			}
+			if !seenPaths[absPath] {
+				seenPaths[absPath] = true
+				chartPaths = append(chartPaths, absPath)
+			}
+		}
+	}
+
+	return chartPaths, nil
+}
+
+// findChartsForPattern finds chart directories for a single pattern
+func (p *Parser) findChartsForPattern(pattern string) ([]string, error) {
+	// If pattern contains wildcards, use filepath.Glob
+	if strings.Contains(pattern, "*") || strings.Contains(pattern, "?") || strings.Contains(pattern, "[") {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid glob pattern: %v", err)
+		}
+
+		var chartPaths []string
+		for _, match := range matches {
+			if p.isValidChartDirectory(match) {
+				chartPaths = append(chartPaths, match)
+			}
+		}
+		return chartPaths, nil
+	}
+
+	// Direct path - validate it's a chart
+	if p.isValidChartDirectory(pattern) {
+		return []string{pattern}, nil
+	}
+
+	return nil, fmt.Errorf("'%s' is not a valid chart directory", pattern)
+}
+
+// isValidChartDirectory checks if a directory contains a valid Helm chart
+func (p *Parser) isValidChartDirectory(path string) bool {
+	chartYamlPath := filepath.Join(path, "Chart.yaml")
+	_, err := os.Stat(chartYamlPath)
+	return err == nil
+}
